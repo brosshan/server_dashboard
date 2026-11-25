@@ -1,0 +1,1 @@
+"""Server resource monitoring application."""

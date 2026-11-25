@@ -1,0 +1,13 @@
+{
+  "source": "web",
+  "ups_url": "https://192.168.0.7/webpages/home.html",
+  "verify_ssl": false,
+  "web_timeout": 5,
+  "host": "192.168.0.7",
+  "port": 161,
+  "version": "v2c",
+  "community": "public",
+  "timeout": 2,
+  "retries": 1,
+  "device_note": "InsightPower G3 Mini SNMP Card"
+}

@@ -1,0 +1,48 @@
+# 環境變數與機敏金鑰
+.env
+.env.*
+!.env.example
+
+# Python 虛擬環境與編譯快取
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 本地 SQLite 資料庫與暫存檔案
+data/
+*.db
+*.sqlite
+*.sqlite3
+.active_url
+
+# SSL/TLS 憑證與私鑰 (極度機敏，嚴禁推送)
+certs/
+*.pem
+*.key
+*.crt
+
+# 歷史修改備份目錄 (內含歷史版本金鑰)
+backup_*/
+backup/
+
+# 內部資安稽核報告 (內含歷史驗證金鑰與內網架構分析，嚴禁公開)
+security*.md
+風險*.md
+風險.md
+
+# 含有特定內網金鑰的客戶端設定檔與部署包
+agent/agent_config.json
+deploy_agent_pkg/agent_config.json
+deploy_agent_pkg.zip
+
+# 含有特定設備帳密的 UPS 本地設定檔 (請保留 config.example.json)
+UPS狀態/config.json
+
+# 作業系統與 IDE 暫存檔
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store

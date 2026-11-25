@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UPS 電池容量與狀態儀表板</title>
+  <style>
+    :root { --bg:#f3f5f7; --card:#fff; --border:#d7dde5; --text:#1f2937; --muted:#6b7280; --ok:#1f9d55; --warn:#d97706; --bad:#dc2626; --accent:#2563eb; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: "Segoe UI", "Noto Sans TC", Arial, sans-serif; background:var(--bg); color:var(--text); }
+    header { padding:16px 20px; background:#111827; color:#fff; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+    header h1 { margin:0; font-size:20px; font-weight:600; }
+    header .meta { font-size:13px; color:#d1d5db; margin-top:4px; }
+    header .meta a { color:#93c5fd; text-decoration:none; }
+    header .meta a:hover { text-decoration:underline; }
+    .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    button { background:var(--accent); color:#fff; border:none; padding:8px 12px; border-radius:6px; cursor:pointer; font-size:14px; }
+    button:hover { filter:brightness(1.05); }
+    .api-link { color:#d1d5db; font-size:13px; text-decoration:none; border:1px solid #374151; padding:6px 10px; border-radius:6px; }
+    .api-link:hover { background:#1f2937; color:#fff; }
+    .container { max-width:1200px; margin:0 auto; padding:16px; }
+    .status-bar { margin-bottom:14px; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--card); font-size:14px; }
+    .status-ok { border-left:4px solid var(--ok); }
+    .status-err { border-left:4px solid var(--bad); }
+
+    /* Battery Capacity Hero Card */
+    .hero-battery {
+      background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin-bottom: 16px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) 2fr;
+      gap: 20px;
+      align-items: center;
+    }
+    @media (max-width: 720px) {
+      .hero-battery { grid-template-columns: 1fr; }
+    }
+    .hero-label { font-size:14px; color:var(--muted); font-weight:600; margin-bottom:6px; }
+    .hero-value { font-size:54px; font-weight:800; line-height:1.05; letter-spacing:-1px; color:var(--ok); }
+    .hero-value.warn { color:var(--warn); }
+    .hero-value.bad { color:var(--bad); }
+    .hero-value.unk { color:var(--muted); }
+    .hero-sub { margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-size:13px; color:var(--muted); }
+    .progress-wrap { background:#e5e7eb; height:18px; border-radius:999px; overflow:hidden; margin-bottom:14px; }
+    .progress-bar { height:100%; width:0%; background:var(--ok); border-radius:999px; transition: width 0.4s ease, background-color 0.3s ease; }
+    .progress-bar.warn { background:var(--warn); }
+    .progress-bar.bad { background:var(--bad); }
+    .hero-metrics { display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:10px; }
+    .metric-box { background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px; padding:10px 12px; }
+    .metric-box .mk { font-size:12px; color:var(--muted); }
+    .metric-box .mv { font-size:16px; font-weight:700; margin-top:2px; color:#111827; }
+
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px; box-shadow:0 1px 2px rgba(0,0,0,0.04); }
+    .card h2 { margin:0 0 10px; font-size:16px; color:#111827; border-bottom:1px solid #edf1f5; padding-bottom:6px; }
+    .kv { display:grid; grid-template-columns: 1fr auto; gap:6px 10px; font-size:14px; }
+    .k { color:var(--muted); }
+    .v { font-weight:600; text-align:right; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; }
+    .pill-ok { background:#dcfce7; color:#166534; }
+    .pill-warn { background:#fef3c7; color:#92400e; }
+    .pill-bad { background:#fee2e2; color:#991b1b; }
+    .pill-unk { background:#e5e7eb; color:#374151; }
+    details { margin-top:14px; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:10px 12px; }
+    summary { cursor:pointer; font-weight:600; }
+    table { width:100%; border-collapse:collapse; margin-top:8px; font-size:13px; }
+    th, td { border-bottom:1px solid #eef2f7; padding:6px 8px; text-align:left; vertical-align:top; }
+    th { color:var(--muted); font-weight:600; position:sticky; top:0; background:#fff; }
+    .table-wrap { max-height:360px; overflow:auto; border:1px solid #eef2f7; border-radius:6px; }
+    code { background:#f3f4f6; padding:1px 4px; border-radius:4px; }
+    .muted { color:var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>UPS 電池容量與狀態儀表板</h1>
+      <div class="meta">
+        來源網址：<a id="ups-url" href="{{ ups_url or ('https://' + host) }}" target="_blank" rel="noopener">{{ ups_url or host }}</a>
+        　|　模式：<span id="mode">{{ source }}</span>
+        　|　更新時間：<span id="ts">-</span>
+      </div>
+    </div>
+    <div class="toolbar">
+      <a class="api-link" href="/api/battery" target="_blank">電池 JSON API</a>
+      <label style="font-size:13px;color:#d1d5db;"><input type="checkbox" id="auto" checked /> 自動更新(10s)</label>
+      <button id="refresh">立即重新整理</button>
+    </div>
+  </header>
+
+  <div class="container">
+    <div id="status" class="status-bar">載入中...</div>
+
+    <section class="hero-battery" aria-label="電池容量總覽">
+      <div>
+        <div class="hero-label">電池容量 (Battery Capacity)</div>
+        <div id="hero-capacity" class="hero-value unk">-- %</div>
+        <div class="hero-sub">
+          <span>電池狀態：<span id="hero-batt-status"><span class="pill pill-unk">-</span></span></span>
+          <span>充放電：<span id="hero-charge-status"><span class="pill pill-unk">-</span></span></span>
+        </div>
+      </div>
+      <div>
+        <div class="progress-wrap" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="hero-progress-wrap">
+          <div id="hero-progress-bar" class="progress-bar"></div>
+        </div>
+        <div class="hero-metrics">
+          <div class="metric-box"><div class="mk">預估剩餘時間</div><div class="mv" id="m-rem">-</div></div>
+          <div class="metric-box"><div class="mk">電池電壓</div><div class="mv" id="m-volt">-</div></div>
+          <div class="metric-box"><div class="mk">電池溫度</div><div class="mv" id="m-temp">-</div></div>
+          <div class="metric-box"><div class="mk">輸出負載</div><div class="mv" id="m-load">-</div></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>UPS 狀態與識別</h2>
+        <div class="kv" id="identity"></div>
+      </section>
+      <section class="card">
+        <h2>輸入 (Input)</h2>
+        <div class="kv" id="input"></div>
+      </section>
+      <section class="card">
+        <h2>輸出 (Output)</h2>
+        <div class="kv" id="output"></div>
+      </section>
+      <section class="card">
+        <h2>電池詳細參數 (Battery)</h2>
+        <div class="kv" id="battery"></div>
+      </section>
+      <section class="card">
+        <h2>排程 / 關機倒數</h2>
+        <div class="kv" id="other"></div>
+      </section>
+    </div>
+
+    <details>
+      <summary>原始抓取資料 (XML / SNMP)</summary>
+      <div class="muted" style="margin-top:6px;font-size:13px;">顯示從 UPS 網頁 XML（<code>index_ups.xml</code> / <code>info_battery.xml</code>）或 SNMP 取得的原始欄位。</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th style="width:55%">欄位 / OID</th><th>Value</th></tr></thead>
+          <tbody id="raw"></tbody>
+        </table>
+      </div>
+    </details>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const tsEl = document.getElementById('ts');
+    const modeEl = document.getElementById('mode');
+    let timer = null;
+
+    function esc(v) {
+      if (v === null || v === undefined) return '<span class="muted">-</span>';
+      return String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function row(k, v) { return `<div class="k">${esc(k)}</div><div class="v">${v}</div>`; }
+    function fmt(v, unit='') {
+      if (v === null || v === undefined || v === '') return '<span class="muted">-</span>';
+      return esc(v) + (unit ? ` <span class="muted">${esc(unit)}</span>` : '');
+    }
+    function pill(text, kind) { return `<span class="pill pill-${kind}">${esc(text)}</span>`; }
+    function statusPill(text) {
+      const t = (text || '').toString().toLowerCase();
+      if (['normal','on line','online','resting','charging','3'].includes(t)) return pill(text || 'Normal', 'ok');
+      if (['battery','low','weak','bypass','bypass/reserve','warning','discharging'].includes(t)) return pill(text, 'warn');
+      if (['depleted','replace','fault','critical','bad','none','other'].includes(t)) return pill(text, 'bad');
+      return pill(text || '-', 'unk');
+    }
+
+    function renderBatteryHero(bat, out) {
+      const cap = bat.capacity_percent !== undefined && bat.capacity_percent !== null
+        ? bat.capacity_percent
+        : bat.charge_percent;
+      const capEl = document.getElementById('hero-capacity');
+      const barEl = document.getElementById('hero-progress-bar');
+      const wrapEl = document.getElementById('hero-progress-wrap');
+
+      if (cap !== null && cap !== undefined && !isNaN(Number(cap))) {
+        const num = Math.max(0, Math.min(100, Number(cap)));
+        capEl.textContent = `${num} %`;
+        barEl.style.width = `${num}%`;
+        wrapEl.setAttribute('aria-valuenow', String(num));
+
+        const cls = num >= 60 ? '' : (num >= 25 ? 'warn' : 'bad');
+        capEl.className = 'hero-value ' + cls;
+        barEl.className = 'progress-bar ' + cls;
+      } else {
+        capEl.textContent = '-- %';
+        capEl.className = 'hero-value unk';
+        barEl.style.width = '0%';
+        barEl.className = 'progress-bar';
+      }
+
+      document.getElementById('hero-batt-status').innerHTML = statusPill(bat.status || bat.status_code);
+      document.getElementById('hero-charge-status').innerHTML = statusPill(bat.charge_status || '-');
+      document.getElementById('m-rem').innerHTML = fmt(bat.minutes_remaining, 'min');
+      const volt = bat.voltage_v !== undefined ? bat.voltage_v : (bat.voltage_0_1vdc !== undefined && bat.voltage_0_1vdc !== null ? (bat.voltage_0_1vdc / 10).toFixed(1) : null);
+      document.getElementById('m-volt').innerHTML = fmt(volt, 'V');
+      document.getElementById('m-temp').innerHTML = fmt(bat.temperature_c, '°C');
+      document.getElementById('m-load').innerHTML = fmt(out.percent_load, '%');
+    }
+
+    function render(data) {
+      const ok = !!data.ok;
+      const err = data.error;
+      const warn = data.warning;
+      const src = data.source || 'web';
+      modeEl.textContent = src === 'web' ? 'Web XML' : 'SNMP';
+
+      statusEl.className = 'status-bar ' + (ok ? 'status-ok' : 'status-err');
+      statusEl.innerHTML = ok
+        ? `UPS 資料抓取成功（模式：${esc(modeEl.textContent)}，共 ${esc(data.raw_count || 0)} 筆欄位）` + (warn ? `　<span class="muted">警告：${esc(warn)}</span>` : '')
+        : `UPS 資料抓取失敗：${esc(err || '未知錯誤')}<div class="muted" style="margin-top:4px;">請檢查 config.json 的 ups_url 與網路連線。</div>`;
+
+      tsEl.textContent = data.timestamp || '-';
+      const d = data.data || {};
+      const id = d.identity || {};
+      const inp = d.input || {};
+      const out = d.output || {};
+      const bat = d.battery || {};
+
+      renderBatteryHero(bat, out);
+
+      document.getElementById('identity').innerHTML = [
+        row('型號', fmt(id.model)),
+        row('類型', fmt(id.type)),
+        row('額定功率', fmt(id.rating_kva, 'kVA')),
+        row('通訊狀態', statusPill(id.comm_status || '-')),
+        row('來源狀態', statusPill(out.source || out.source_code)),
+        row('管理卡', fmt(id.name)),
+      ].join('');
+
+      document.getElementById('input').innerHTML = [
+        row('電壓 (L-N)', fmt(inp.voltage_v, 'V')),
+        row('頻率', fmt(inp.frequency_hz, 'Hz')),
+        row('相數', fmt(inp.num_lines)),
+      ].join('');
+
+      document.getElementById('output').innerHTML = [
+        row('來源', statusPill(out.source || out.source_code)),
+        row('電壓 (L-N)', fmt(out.voltage_v, 'V')),
+        row('負載', fmt(out.percent_load, '%')),
+        row('頻率', fmt(out.frequency_hz, 'Hz')),
+      ].join('');
+
+      const cap = bat.capacity_percent !== undefined ? bat.capacity_percent : bat.charge_percent;
+      document.getElementById('battery').innerHTML = [
+        row('狀態', statusPill(bat.status || bat.status_code)),
+        row('容量', fmt(cap, '%')),
+        row('充放電狀態', statusPill(bat.charge_status || '-')),
+        row('剩餘時間', fmt(bat.minutes_remaining, 'min')),
+        row('電壓', fmt(bat.voltage_v, 'V')),
+        row('溫度', fmt(bat.temperature_c, '°C')),
+        row('上次更換日期', fmt(bat.replace_date_last)),
+        row('下次更換日期', fmt(bat.replace_date_next)),
+      ].join('');
+
+      const sche = d.schedule || {};
+      const cd = d.countdown || {};
+      document.getElementById('other').innerHTML = [
+        row('下次關機時間', fmt(sche.next_power_off)),
+        row('下次開機時間', fmt(sche.next_power_on)),
+        row('下次 10 秒測試', fmt(sche.next_test)),
+        row('下次深度放電測試', fmt(sche.next_deep_batt_test)),
+        row('距 UPS 關機時間', fmt(cd.time_to_power_off)),
+        row('距 OS 預計關機時間', fmt(cd.estimated_os_delay)),
+      ].join('');
+
+      const raw = data.raw || [];
+      const tbody = document.getElementById('raw');
+      if (!raw.length) {
+        tbody.innerHTML = '<tr><td colspan="2" class="muted">無資料</td></tr>';
+      } else {
+        tbody.innerHTML = raw.map(r => `<tr><td><code>${esc(r.key || r.oid)}</code></td><td>${esc(r.value)}</td></tr>`).join('');
+      }
+    }
+
+    async function load() {
+      try {
+        const res = await fetch('/api/ups', { cache: 'no-store' });
+        const data = await res.json();
+        render(data);
+      } catch (e) {
+        statusEl.className = 'status-bar status-err';
+        statusEl.textContent = '無法連線到後端 API：' + e;
+      }
+    }
+
+    function setupAuto() {
+      if (timer) clearInterval(timer);
+      if (document.getElementById('auto').checked) timer = setInterval(load, 10000);
+    }
+    document.getElementById('refresh').addEventListener('click', load);
+    document.getElementById('auto').addEventListener('change', setupAuto);
+    setupAuto();
+    load();
+  </script>
+</body>
+</html>

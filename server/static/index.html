@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>機房與外點設備即時監控系統</title>
+  <!-- 本地載入 Tailwind 與 ECharts，完全擺脫外部 CDN 連線與載入失敗問題 -->
+  <script src="/tailwind.min.js"></script>
+  <script src="/echarts.min.js"></script>
+  <style>
+    body { background:#0b1120; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+    .glass { background:rgba(30,41,59,.92); border:1px solid rgba(148,163,184,.2); }
+    .glass-card { background:rgba(30,41,59,.8); border:1px solid rgba(148,163,184,.18); }
+    .glass-card:hover { border-color: rgba(56, 189, 248, 0.6); transform: translateY(-1px); transition: all 0.2s ease; }
+    .badge-online { background-color: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.4); }
+    .badge-warning { background-color: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
+    .badge-offline { background-color: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
+    .badge-unknown { background-color: rgba(148, 163, 184, 0.2); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.4); }
+    /* 拖拉區塊樣式 */
+    .dashboard-section { transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1), box-shadow 0.2s, opacity 0.2s; }
+    .dashboard-section.dragging { opacity: 0.45; transform: scale(0.99); }
+    .dashboard-section.drag-over { border: 2px dashed #38bdf8; border-radius: 1rem; padding: 0.5rem; background: rgba(56, 189, 248, 0.05); }
+    .drag-handle { cursor: grab; user-select: none; }
+    .drag-handle:active { cursor: grabbing; }
+  </style>
+</head>
+<body class="text-slate-100 min-h-screen pb-12">
+  <div class="max-w-[1600px] mx-auto p-5">
+    
+    <!-- 頂部導航與狀態列 -->
+    <header class="flex flex-wrap items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-800">
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="inline-block w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse"></span>
+          <p class="text-xs font-semibold tracking-wider text-cyan-400 uppercase">Multi-Site Infrastructure Monitor</p>
+        </div>
+        <h1 class="text-2xl font-bold tracking-tight text-white mt-0.5">機房伺服器、NAS 與各點防火牆即時監控</h1>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <!-- 管理金鑰快速設定 -->
+        <button id="btn-admin-auth" class="px-3 py-1.5 text-xs rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition" title="設定管理金鑰以獲得編輯權限">
+          <span>🔑</span> <span id="admin-auth-status">未驗證</span>
+        </button>
+
+        <!-- 導航切換 -->
+        <nav class="flex bg-slate-800/80 p-1 rounded-lg border border-slate-700">
+          <button id="tab-btn-dashboard" class="px-4 py-1.5 text-sm font-medium rounded-md bg-cyan-600 text-white shadow">
+            即時監控儀表板
+          </button>
+          <button id="tab-btn-settings" class="px-4 py-1.5 text-sm font-medium rounded-md text-slate-300 hover:text-white hover:bg-slate-700/60 transition">
+            ⚙️ 設備與站點設定
+          </button>
+        </nav>
+        <div id="connection" class="rounded-full px-3 py-1 text-xs font-medium bg-slate-700 text-slate-300">連線中...</div>
+      </div>
+    </header>
+
+    <!-- ===== 頁面 1: 即時監控儀表板 (Dashboard) ===== -->
+    <main id="view-dashboard">
+      <!-- 統計指標卡片 -->
+      <section id="summary" class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4 mb-6"></section>
+
+      <!-- 站點篩選列 (Site Filters) 與 排版重設 -->
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div class="flex items-center gap-2 overflow-x-auto pb-1" id="location-tabs">
+          <span class="text-xs text-slate-400 font-medium">站點切換：</span>
+          <button data-loc="all" class="loc-filter-btn px-3 py-1 text-xs rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">全部站點</button>
+        </div>
+        <div class="flex items-center gap-3 text-xs">
+          <div class="flex items-center gap-2 text-slate-400">
+            <span class="inline-block w-2 h-2 rounded-full bg-emerald-400"></span>在線
+            <span class="inline-block w-2 h-2 rounded-full bg-amber-400 ml-2"></span>警示(延遲>150ms/負載高)
+            <span class="inline-block w-2 h-2 rounded-full bg-rose-400 ml-2"></span>離線/異常
+          </div>
+          <button id="btn-reset-layout" class="px-2.5 py-1 text-xs text-slate-400 hover:text-slate-200 bg-slate-800/80 hover:bg-slate-700 rounded-md border border-slate-700 transition flex items-center gap-1" title="點擊還原預設區塊順序">
+            <span>↺</span> 重設區塊順序
+          </button>
+        </div>
+      </div>
+
+      <!-- 可自由拖拉編排順序的專區容器 -->
+      <div id="dashboard-sections-container" class="space-y-8">
+
+      <!-- 1. 伺服器專區 (Servers) - 包含 Agent 遙測主機、站點主機與歷史趨勢 -->
+      <section id="section-servers" data-section-id="servers" draggable="true" class="dashboard-section">
+        <div class="flex items-center justify-between mb-4 pb-2 border-b border-slate-800">
+          <div class="flex items-center gap-2.5">
+            <span class="drag-handle p-2 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 text-lg hover:bg-cyan-500/20 transition" title="按住並拖拉可調整本區塊順序">⠿ 🖥️</span>
+            <div>
+              <h2 class="font-bold text-xl text-slate-100 flex items-center gap-2">
+                伺服器運算主機專區 (Servers)
+                <span class="text-[11px] font-normal text-slate-500 border border-slate-700/60 rounded px-1.5 py-0.5">可拖拉排序</span>
+              </h2>
+              <p class="text-xs text-slate-400 mt-0.5">匯整所有伺服器主機之即時 CPU、RAM、各磁碟分割區與 24 小時資源走勢</p>
+            </div>
+            <span id="badge-server-count" class="text-xs px-2.5 py-0.5 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-800/40 ml-2">0 台</span>
+          </div>
+        </div>
+        
+        <div class="grid xl:grid-cols-3 gap-5">
+          <!-- 伺服器主機清單 -->
+          <div class="xl:col-span-1 glass rounded-xl p-4">
+            <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">伺服器清單 (點擊切換右側圖表)</h3>
+            <div id="custom-server-grid" class="mb-3 space-y-2"></div>
+            <div id="server-list" class="space-y-2.5 max-h-[520px] overflow-y-auto pr-1"></div>
+          </div>
+
+          <!-- 趨勢圖表與當前主機詳細資源卡片 -->
+          <div class="xl:col-span-2 glass rounded-xl p-4 flex flex-col justify-between">
+            <div>
+              <div class="flex justify-between items-center mb-3">
+                <h3 id="chart-title" class="font-bold text-slate-200">伺服器資源歷史趨勢</h3>
+                <select id="hours" class="bg-slate-800 border border-slate-700 text-slate-300 rounded px-2.5 py-1 text-xs focus:ring-1 focus:ring-cyan-500 outline-none">
+                  <option value="1">最近 1 小時</option>
+                  <option value="24" selected>最近 24 小時</option>
+                  <option value="168">最近 7 天</option>
+                </select>
+              </div>
+
+              <!-- 當前選定主機之 CPU、RAM、磁碟即時詳細指標卡片 -->
+              <div id="server-detail-metrics" class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                <!-- 動態注入 CPU / 記憶體 / 磁碟 使用%與剩餘% 卡片 -->
+              </div>
+            </div>
+
+            <div id="history-chart" class="h-[340px] w-full"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. NAS 儲存系統專區 (NAS Storage) -->
+      <section id="section-nas" data-section-id="nas" draggable="true" class="dashboard-section">
+        <div class="flex items-center justify-between mb-4 pb-2 border-b border-slate-800">
+          <div class="flex items-center gap-2.5">
+            <span class="drag-handle p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-lg hover:bg-emerald-500/20 transition" title="按住並拖拉可調整本區塊順序">⠿ 💾</span>
+            <div>
+              <h2 class="font-bold text-xl text-slate-100 flex items-center gap-2">
+                各點 NAS 與儲存系統專區 (NAS Storage)
+                <span class="text-[11px] font-normal text-slate-500 border border-slate-700/60 rounded px-1.5 py-0.5">可拖拉排序</span>
+              </h2>
+              <p class="text-xs text-slate-400 mt-0.5">即時監控 Synology / QNAP 等儲存設備之連線品質、SNMP 磁區空間與硬體溫度</p>
+            </div>
+            <span id="badge-nas-count" class="text-xs px-2.5 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-800/40 ml-2">0 台</span>
+          </div>
+        </div>
+        <div id="nas-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          <!-- 動態注入 NAS 卡片 -->
+        </div>
+      </section>
+
+      <!-- 3. 防火牆與邊界閘道專區 (Firewall / VPN) -->
+      <section id="section-firewall" data-section-id="firewall" draggable="true" class="dashboard-section">
+        <div class="flex items-center justify-between mb-4 pb-2 border-b border-slate-800">
+          <div class="flex items-center gap-2.5">
+            <span class="drag-handle p-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-lg hover:bg-indigo-500/20 transition" title="按住並拖拉可調整本區塊順序">⠿ 🛡️</span>
+            <div>
+              <h2 class="font-bold text-xl text-slate-100 flex items-center gap-2">
+                各點防火牆與邊界閘道專區 (Firewall / VPN)
+                <span class="text-[11px] font-normal text-slate-500 border border-slate-700/60 rounded px-1.5 py-0.5">可拖拉排序</span>
+              </h2>
+              <p class="text-xs text-slate-400 mt-0.5">監控各外點分支機構與機房對外防火牆之存活狀態、VPN 通道與延遲</p>
+            </div>
+            <span id="badge-firewall-count" class="text-xs px-2.5 py-0.5 rounded-full bg-indigo-950/80 text-indigo-300 border border-indigo-800/40 ml-2">0 台</span>
+          </div>
+        </div>
+        <div id="firewall-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          <!-- 動態注入防火牆卡片 -->
+        </div>
+      </section>
+
+      <!-- 4. UPS 不斷電系統專區 (UPS Status) -->
+      <section id="section-ups" data-section-id="ups" draggable="true" class="dashboard-section">
+        <div class="flex items-center justify-between mb-4 pb-2 border-b border-slate-800">
+          <div class="flex items-center gap-2.5">
+            <span class="drag-handle p-2 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 text-lg hover:bg-amber-500/20 transition" title="按住並拖拉可調整本區塊順序">⠿ 🔋</span>
+            <div>
+              <h2 class="font-bold text-xl text-slate-100 flex items-center gap-2">
+                各點 UPS 不斷電系統專區 (UPS Status)
+                <span class="text-[11px] font-normal text-slate-500 border border-slate-700/60 rounded px-1.5 py-0.5">可拖拉排序</span>
+              </h2>
+              <p class="text-xs text-slate-400 mt-0.5">監控機房與各分點 UPS 供電狀態、電池容量%、預估備援時間、負載率與輸入/輸出電壓</p>
+            </div>
+            <span id="badge-ups-count" class="text-xs px-2.5 py-0.5 rounded-full bg-amber-950/80 text-amber-300 border border-amber-800/40 ml-2">0 台</span>
+          </div>
+        </div>
+        <div id="ups-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          <!-- 動態注入 UPS 卡片 -->
+        </div>
+      </section>
+
+      </div> <!-- 結尾 #dashboard-sections-container -->
+    </main>
+
+    <!-- ===== 頁面 2: 設備與站點設定 (Settings) ===== -->
+    <section id="view-settings" class="hidden">
+      <div class="glass rounded-xl p-6">
+        <div class="flex flex-wrap items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-800">
+          <div>
+            <h2 class="text-xl font-bold text-white">設備與外點監控設定</h2>
+            <p class="text-sm text-slate-400 mt-1">管理各據點需要納入監控的 Server、NAS、防火牆及探測參數（Ping / TCP Port）</p>
+          </div>
+          <button id="btn-open-add-device" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-medium rounded-lg flex items-center gap-1.5 shadow-lg shadow-cyan-900/40 transition">
+            <span>+</span> 新增監控設備
+          </button>
+        </div>
+
+        <!-- 設備清單表格 -->
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm text-slate-300">
+            <thead class="bg-slate-800/80 text-xs uppercase text-slate-400 border-b border-slate-700">
+              <tr>
+                <th class="py-3 px-4">設備名稱</th>
+                <th class="py-3 px-4">類型</th>
+                <th class="py-3 px-4">所屬站點/分點</th>
+                <th class="py-3 px-4">IP 位址 / 主機名</th>
+                <th class="py-3 px-4">探測模式</th>
+                <th class="py-3 px-4">當前狀態</th>
+                <th class="py-3 px-4">最新延遲 / 備註</th>
+                <th class="py-3 px-4 text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody id="device-table-body" class="divide-y divide-slate-800/80">
+              <!-- 動態載入表格資料 -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- 新增/編輯設備對話框 (Modal) -->
+  <div id="device-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 hidden">
+    <div class="glass max-w-lg w-full rounded-2xl p-6 border border-slate-700 shadow-2xl">
+      <div class="flex justify-between items-center mb-5 pb-3 border-b border-slate-700">
+        <h3 id="modal-title" class="text-lg font-bold text-white">新增監控設備</h3>
+        <button id="modal-close" class="text-slate-400 hover:text-white text-xl">✕</button>
+      </div>
+
+      <form id="device-form" class="space-y-4">
+        <input type="hidden" id="form-device-id" value="">
+        
+        <div>
+          <label class="block text-xs font-semibold text-slate-300 mb-1">設備名稱 <span class="text-rose-400">*</span></label>
+          <input type="text" id="form-name" required placeholder="例如：台北總部-核心防火牆、台中-Synology-NAS" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500 outline-none">
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">設備類型 <span class="text-rose-400">*</span></label>
+            <select id="form-device-type" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500 outline-none">
+              <option value="firewall">🛡️ 防火牆 (Firewall)</option>
+              <option value="nas">💾 NAS 儲存 (NAS)</option>
+              <option value="server">🖥️ 伺服器 (Server)</option>
+              <option value="ups">🔋 UPS 不斷電系統 (UPS)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">所屬分點/站點 <span class="text-rose-400">*</span></label>
+            <input type="text" id="form-location" required placeholder="例如：台北總部、台中辦公室" value="台北總部" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500 outline-none">
+          </div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-3">
+          <div class="col-span-2">
+            <label class="block text-xs font-semibold text-slate-300 mb-1">IP 位址 / 主機名 <span class="text-rose-400">*</span></label>
+            <input type="text" id="form-ip" required placeholder="例如：192.168.1.1 或 vpn.company.com" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500 outline-none">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">探測 Port (選填)</label>
+            <input type="number" id="form-port" placeholder="如 445/443" min="1" max="65535" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500 outline-none">
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">探測方式</label>
+            <select id="form-method" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500 outline-none">
+              <option value="ping">ICMP Ping (網路存活/延遲)</option>
+              <option value="tcp">TCP Port 探測 (服務監聽)</option>
+              <option value="web">Web XML / API 採集 (UPS 專用)</option>
+              <option value="snmp">SNMP 協定採集 (UPS / 網路設備)</option>
+              <option value="agent">Agent 上報 (主機內部)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">啟用狀態</label>
+            <select id="form-active" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500 outline-none">
+              <option value="true">啟用監控</option>
+              <option value="false">暫停監控</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-slate-300 mb-1">備註說明</label>
+          <input type="text" id="form-notes" placeholder="例如：主要對外閘道、含 IPsec 站台" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500 outline-none">
+        </div>
+
+        <!-- 測試連線回顯 -->
+        <div id="probe-test-result" class="text-xs p-2.5 rounded-lg bg-slate-800/80 border border-slate-700 hidden"></div>
+
+        <div class="flex items-center justify-between pt-3 border-t border-slate-700 mt-5">
+          <button type="button" id="btn-test-probe" class="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs rounded-lg transition">
+            🔍 立即測試連線
+          </button>
+          <div class="flex gap-2">
+            <button type="button" id="modal-cancel" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-lg transition">
+              取消
+            </button>
+            <button type="submit" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-medium rounded-lg transition shadow-md">
+              儲存設備
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/app.js?v=20261124_drag"></script>
+</body>
+</html>
