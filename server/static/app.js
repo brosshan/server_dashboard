@@ -88,12 +88,13 @@ function renderLocationTabs() {
 
   locations.forEach((loc) => {
     const isAct = selectedLocation === loc;
+    const safeLoc = escapeHTML(loc);
     html += `
-      <button data-loc="${loc}" class="loc-filter-btn px-3 py-1 text-xs rounded-full border transition ${
+      <button data-loc="${safeLoc}" class="loc-filter-btn px-3 py-1 text-xs rounded-full border transition ${
         isAct
           ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/40"
           : "bg-slate-800/80 text-slate-400 border-slate-700 hover:text-slate-200"
-      }">${loc}</button>
+      }">${safeLoc}</button>
     `;
   });
 
@@ -595,7 +596,7 @@ function renderServerDetailCards(server) {
 async function loadHistory() {
   if (!selectedHostname) return;
   const hours = document.getElementById("hours").value;
-  const response = await fetch(`/api/history/${encodeURIComponent(selectedHostname)}?hours=${hours}`);
+  const response = await fetchReadWithAuth(`/api/history/${encodeURIComponent(selectedHostname)}?hours=${hours}`);
   if (!response.ok) return;
   const rows = await response.json();
   const curSrv = servers.find((s) => s.hostname === selectedHostname);
@@ -654,9 +655,9 @@ function renderDeviceTable() {
           <p class="text-[11px] text-slate-500 truncate max-w-[150px]">${escapeHTML(d.notes || d.status_detail || '')}</p>
         </td>
         <td class="py-3 px-4 text-right space-x-2">
-          <button onclick="testDevice(${d.id})" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-400 transition" title="立即檢測">檢測</button>
-          <button onclick="editDevice(${d.id})" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition">編輯</button>
-          <button onclick="deleteDevice(${d.id})" class="text-xs px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 transition">刪除</button>
+          <button type="button" data-action="test" data-id="${d.id}" class="device-action-btn text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-400 transition" title="立即檢測">檢測</button>
+          <button type="button" data-action="edit" data-id="${d.id}" class="device-action-btn text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition">編輯</button>
+          <button type="button" data-action="delete" data-id="${d.id}" class="device-action-btn text-xs px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 transition">刪除</button>
         </td>
       </tr>
     `;
@@ -698,7 +699,10 @@ document.getElementById("btn-open-add-device").addEventListener("click", () => o
 document.getElementById("modal-close").addEventListener("click", closeDeviceModal);
 document.getElementById("modal-cancel").addEventListener("click", closeDeviceModal);
 
-let adminKey = localStorage.getItem("monitor_admin_key") || "";
+// 清除舊版 localStorage 殘留金鑰，改用 sessionStorage（關閉分頁即自動清除）
+localStorage.removeItem("monitor_admin_key");
+let adminKey = sessionStorage.getItem("monitor_admin_key") || "";
+let readApiKey = sessionStorage.getItem("monitor_read_key") || "";
 
 // 安全防護：HTML 實體轉義函數 (防止 DOM-based XSS)
 function escapeHTML(str) {
@@ -729,11 +733,19 @@ document.getElementById("btn-admin-auth").addEventListener("click", () => {
   if (entered !== null) {
     adminKey = entered.trim();
     if (adminKey) {
-      localStorage.setItem("monitor_admin_key", adminKey);
+      sessionStorage.setItem("monitor_admin_key", adminKey);
+      readApiKey = adminKey;
+      sessionStorage.setItem("monitor_read_key", readApiKey);
     } else {
-      localStorage.removeItem("monitor_admin_key");
+      sessionStorage.removeItem("monitor_admin_key");
+      readApiKey = "";
+      sessionStorage.removeItem("monitor_read_key");
     }
     updateAdminAuthUI();
+    if (typeof connect === "function") {
+      if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+      connect();
+    }
   }
 });
 updateAdminAuthUI();
@@ -743,6 +755,37 @@ function getAuthHeaders() {
     "Content-Type": "application/json",
     ...(adminKey ? { "X-Admin-Key": adminKey } : {}),
   };
+}
+
+function getReadHeaders(key = readApiKey || adminKey) {
+  return key
+    ? { "X-API-Key": key, "X-Admin-Key": key }
+    : {};
+}
+
+async function fetchReadWithAuth(url, options = {}) {
+  const request = (key) => fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      ...getReadHeaders(key),
+    },
+  });
+
+  let response = await request(readApiKey || adminKey);
+  if (response.status !== 401) return response;
+
+  const entered = prompt(
+    "此儀表板需要讀取授權。請輸入 API_KEY 或 ADMIN_API_KEY：",
+    readApiKey || adminKey
+  );
+  if (entered === null || !entered.trim()) return response;
+
+  readApiKey = entered.trim();
+  sessionStorage.setItem("monitor_read_key", readApiKey);
+  response = await request(readApiKey);
+  if (response.ok && socket && socket.readyState === WebSocket.CLOSED) connect();
+  return response;
 }
 
 async function fetchWithAuth(url, options = {}) {
@@ -758,7 +801,7 @@ async function fetchWithAuth(url, options = {}) {
     );
     if (entered !== null && entered.trim()) {
       adminKey = entered.trim();
-      localStorage.setItem("monitor_admin_key", adminKey);
+      sessionStorage.setItem("monitor_admin_key", adminKey);
       updateAdminAuthUI();
       options.headers = {
         ...options.headers,
@@ -845,13 +888,24 @@ document.getElementById("btn-test-probe").addEventListener("click", async () => 
     probeResultEl.innerHTML = `
       <div class="flex items-center gap-2 ${isOk ? 'text-emerald-400' : 'text-rose-400'} font-semibold">
         <span>${isOk ? '✓ 連線測試成功' : '✗ 連線失敗'}</span>
-        ${result.latency_ms ? `<span>(${result.latency_ms} ms)</span>` : ''}
+        ${result.latency_ms ? `<span>(${escapeHTML(result.latency_ms)} ms)</span>` : ''}
       </div>
-      <p class="text-[11px] text-slate-400 mt-1">${result.status_detail || ''}</p>
+      <p class="text-[11px] text-slate-400 mt-1">${escapeHTML(result.status_detail || '')}</p>
     `;
   } catch (err) {
-    probeResultEl.innerHTML = `<span class="text-rose-400">測試異常: ${err.message}</span>`;
+    probeResultEl.innerHTML = `<span class="text-rose-400">測試異常: ${escapeHTML(err.message)}</span>`;
   }
+});
+
+// 使用事件委派處理設備表格 CRUD 操作（避免行內 onclick，配合嚴格 CSP）
+document.getElementById("device-table-body").addEventListener("click", (e) => {
+  const btn = e.target.closest(".device-action-btn");
+  if (!btn) return;
+  const id = parseInt(btn.dataset.id, 10);
+  const action = btn.dataset.action;
+  if (action === "test") window.testDevice(id);
+  else if (action === "edit") window.editDevice(id);
+  else if (action === "delete") window.deleteDevice(id);
 });
 
 // 全局暴露 CRUD 動作給 HTML 行內使用
@@ -919,10 +973,8 @@ tabBtnSettings.addEventListener("click", () => {
 // === 資料載入與 WebSocket ===
 
 async function refreshAll() {
-  const [resServers, resDevices] = await Promise.all([
-    fetch("/api/servers"),
-    fetch("/api/devices"),
-  ]);
+  const resServers = await fetchReadWithAuth("/api/servers");
+  const resDevices = await fetchReadWithAuth("/api/devices");
   if (resServers.ok) servers = await resServers.json();
   if (resDevices.ok) devices = await resDevices.json();
 
@@ -938,7 +990,16 @@ async function refreshAll() {
 
 function connect() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  socket = new WebSocket(`${protocol}//${location.host}/ws`);
+  const authKey = readApiKey || adminKey;
+  const protocols = ["monitor.v1"];
+  if (authKey) {
+    const bytes = new TextEncoder().encode(authKey);
+    let binary = "";
+    bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+    const encodedKey = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    protocols.push(`auth.${encodedKey}`);
+  }
+  socket = new WebSocket(`${protocol}//${location.host}/ws`, protocols);
   socket.onopen = () => {
     reconnectDelay = 1000;
     document.getElementById("connection").textContent = "即時連線中";
@@ -962,7 +1023,13 @@ function connect() {
     renderServers();
     renderDeviceTable();
   };
-  socket.onclose = () => {
+  socket.onclose = (event) => {
+    if (event.code === 1008) {
+      document.getElementById("connection").textContent = "需要讀取授權";
+      document.getElementById("connection").className = "rounded-full px-3 py-1 text-xs font-medium bg-amber-600/30 text-amber-300 border border-amber-500/30";
+      return;
+    }
+    if (event.code === 1000) return;
     document.getElementById("connection").textContent = "連線中斷重試中...";
     document.getElementById("connection").className = "rounded-full px-3 py-1 text-xs font-medium bg-amber-600/30 text-amber-300 border border-amber-500/30";
     setTimeout(connect, reconnectDelay);
@@ -1080,6 +1147,5 @@ function applySavedSectionOrder(customOrder = null) {
 document.getElementById("hours").addEventListener("change", loadHistory);
 window.addEventListener("resize", () => chart.resize());
 
-refreshAll().catch(console.error);
-connect();
+refreshAll().then(connect).catch(console.error);
 initDraggableSections();

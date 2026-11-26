@@ -1,9 +1,11 @@
+import ipaddress
 import json
 import os
 import platform
 import socket
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import psutil
 import requests
@@ -15,17 +17,12 @@ if getattr(sys, "frozen", False):
 else:
     BASE_DIR = Path(__file__).parent
 
-import urllib3
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 CONFIG_PATH = BASE_DIR / "agent_config.json"
 
 
 def load_config() -> dict:
     default_config = {
         "server_url": "http://127.0.0.1:8000/api/metrics",
-        "api_key": "",
         "interval_seconds": 5,
         "custom_hostname": "",  # 若指定則覆蓋本機名稱，例如 "台中廠區-ERP1"
     }
@@ -37,6 +34,20 @@ def load_config() -> dict:
         except Exception as e:
             print(f"[警告] 讀取設定檔失敗，使用預設值: {e}")
     return default_config
+
+
+def validate_target_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http" and parsed.hostname:
+        try:
+            if ipaddress.ip_address(parsed.hostname).is_loopback:
+                return
+        except ValueError:
+            if parsed.hostname.lower() == "localhost":
+                return
+    raise ValueError("Agent only sends API keys over HTTPS; HTTP is allowed only for loopback development")
 
 
 def get_ip_address(target_server_url: str = "") -> str:
@@ -111,7 +122,10 @@ def main():
         or config.get("api_url")
         or "http://127.0.0.1:8000/api/metrics"
     )
-    api_key = os.getenv("MONITOR_API_KEY") or config.get("api_key", "")
+    validate_target_url(server_url)
+    api_key = os.getenv("MONITOR_API_KEY", "").strip()
+    if not api_key or api_key in ("change-me", "change-this-secret-key", "change-this-metrics-key"):
+        raise RuntimeError("Set MONITOR_API_KEY to a non-placeholder value in the process environment")
     interval = max(2, int(os.getenv("MONITOR_INTERVAL_SECONDS") or config.get("interval_seconds", 5)))
     custom_host = os.getenv("MONITOR_HOSTNAME") or config.get("custom_hostname", "")
 
@@ -122,8 +136,6 @@ def main():
     print(f"  顯示主機名稱   : {custom_host if custom_host else socket.gethostname()}")
     print(f"  本機偵測 IP    : {get_ip_address(server_url)}")
     print(f"  回報頻率       : 每 {interval} 秒")
-    if not api_key or api_key in ("change-me", "change-this-secret-key"):
-        print("  ⚠️ [警告] API Key 尚未設定或為預設值，可能無法通過伺服器驗證！")
     print("==================================================")
     print("[資訊] 開始執行監控回報，若要停止請按 Ctrl + C...\n")
 
@@ -134,26 +146,17 @@ def main():
 
     session = requests.Session()
     cert_file = BASE_DIR / "cert.pem"
-    if cert_file.exists():
-        session.verify = str(cert_file)
-    else:
-        session.verify = False
+    session.verify = str(cert_file) if cert_file.exists() else True
 
-    import urllib.parse
-    parsed = urllib.parse.urlparse(server_url)
+    parsed = urlparse(server_url)
     target_host = parsed.hostname or "127.0.0.1"
     target_path = parsed.path or "/api/metrics"
 
-    # 候選連線優先嘗試 HTTPS (Port 443)，確保金鑰在傳輸中受到 TLS 加密保護
-    candidate_urls = []
-    for c in [
-        server_url,
-        f"https://{target_host}{target_path}",
-        f"http://{target_host}{target_path}",
-        f"http://{target_host}:8000{target_path}",
-    ]:
-        if c not in candidate_urls:
-            candidate_urls.append(c)
+    candidate_urls = [server_url]
+    if parsed.scheme == "http":
+        fallback_url = f"http://{target_host}:8000{target_path}"
+        if fallback_url != server_url:
+            candidate_urls.append(fallback_url)
 
     active_url = None
 
@@ -183,7 +186,7 @@ def main():
                 cur_time = time.strftime("%H:%M:%S")
                 print(f"[{cur_time}] 成功上報 ({active_url}) -> CPU: {payload['cpu_percent']}% | RAM: {payload['memory_percent']}% | 磁區數: {len(payload['disk'])}")
             elif response.status_code == 401:
-                print(f"[認證失敗] API Key 錯誤 (401)，請確認 agent_config.json 與監控中心 .env 相同！")
+                print("[認證失敗] API Key 錯誤 (401)，請確認 MONITOR_API_KEY 與伺服器 API_KEY 相同。")
             else:
                 print(f"[警告] 伺服器回傳狀態碼: {response.status_code} - {response.text[:200]}")
 

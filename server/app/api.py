@@ -1,3 +1,4 @@
+import base64
 import hmac
 import time
 from collections import defaultdict
@@ -52,6 +53,37 @@ def verify_admin_auth(x_admin_key: str | None = Header(default=None)):
         )
 
 
+def verify_read_auth(
+    x_api_key: str | None = Header(default=None),
+    x_admin_key: str | None = Header(default=None),
+):
+    """Require a valid agent or administrator key for read-only endpoints."""
+    if not settings.require_read_auth:
+        return
+    valid_api = bool(x_api_key and hmac.compare_digest(x_api_key, settings.api_key))
+    valid_admin = bool(x_admin_key and hmac.compare_digest(x_admin_key, settings.effective_admin_key))
+    if not (valid_api or valid_admin):
+        raise HTTPException(
+            status_code=401,
+            detail="需要授權金鑰 (Invalid or Missing X-API-Key / X-Admin-Key)",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+
+
+def _websocket_protocol_key(websocket: WebSocket) -> str:
+    for offered in websocket.headers.get("sec-websocket-protocol", "").split(","):
+        protocol = offered.strip()
+        if not protocol.startswith("auth."):
+            continue
+        encoded = protocol.removeprefix("auth.")
+        try:
+            padding = "=" * (-len(encoded) % 4)
+            return base64.urlsafe_b64decode(encoded + padding).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return ""
+    return ""
+
+
 @router.post("/api/metrics")
 async def ingest_metrics(
     payload: MetricsPayload,
@@ -75,12 +107,22 @@ async def ingest_metrics(
 
 
 @router.get("/api/servers")
-async def list_servers():
+async def list_servers(
+    x_api_key: str | None = Header(default=None),
+    x_admin_key: str | None = Header(default=None),
+):
+    verify_read_auth(x_api_key, x_admin_key)
     return await database.list_servers()
 
 
 @router.get("/api/history/{hostname}")
-async def server_history(hostname: str, hours: int = 24):
+async def server_history(
+    hostname: str,
+    hours: int = 24,
+    x_api_key: str | None = Header(default=None),
+    x_admin_key: str | None = Header(default=None),
+):
+    verify_read_auth(x_api_key, x_admin_key)
     if hours < 1 or hours > 168:
         raise HTTPException(status_code=400, detail="hours must be between 1 and 168")
     return await database.history(hostname, hours)
@@ -90,7 +132,11 @@ async def server_history(hostname: str, hours: int = 24):
 
 
 @router.get("/api/devices")
-async def list_devices():
+async def list_devices(
+    x_api_key: str | None = Header(default=None),
+    x_admin_key: str | None = Header(default=None),
+):
+    verify_read_auth(x_api_key, x_admin_key)
     return await database.list_devices()
 
 
@@ -164,7 +210,23 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=1008)  # Policy Violation
         return
 
-    await websocket.accept()
+    if settings.require_read_auth:
+        token = (
+            _websocket_protocol_key(websocket)
+            or websocket.headers.get("x-api-key")
+            or websocket.headers.get("x-admin-key")
+            or ""
+        )
+        valid = hmac.compare_digest(token, settings.api_key) or hmac.compare_digest(token, settings.effective_admin_key)
+        if not valid:
+            await websocket.close(code=1008)
+            return
+
+    offered_protocols = {
+        protocol.strip()
+        for protocol in websocket.headers.get("sec-websocket-protocol", "").split(",")
+    }
+    await websocket.accept(subprotocol="monitor.v1" if "monitor.v1" in offered_protocols else None)
     connections.add(websocket)
     try:
         await websocket.send_json({"type": "servers", "data": await database.list_servers()})

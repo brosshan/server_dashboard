@@ -1,17 +1,27 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, SecretStr
 
 
 class Settings(BaseSettings):
     api_key: str = "change-me"  # Agent 遙測上報專用 Key
     admin_api_key: str = "change-admin-key"  # 管理者金鑰 (嚴格隔離，禁止與 api_key 相同)
-    snmp_community: str = "public"  # 預設 SNMP 社群名稱
+    require_read_auth: bool = True
+    snmp_v3_username: str = ""
+    snmp_v3_auth_password: SecretStr = SecretStr("")
+    snmp_v3_priv_password: SecretStr = SecretStr("")
+    snmp_v3_auth_protocol: str = "sha1"
+    snmp_v3_priv_protocol: str = "aes"
+    snmp_timeout_seconds: int = Field(default=3, ge=1, le=30)
+    snmp_retries: int = Field(default=1, ge=0, le=5)
+    ups_ssl_ca_path: str = ""
 
     redis_url: str = "redis://redis:6379/0"
     sqlite_path: str = "./data/metrics.db"
+    sqlite_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     heartbeat_timeout_seconds: int = 30
 
     # 伺服器監聽與通訊埠配置 (支援 Port 80 與 443)
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port_http: int = 80
     port_https: int = 443
     enable_http: bool = True

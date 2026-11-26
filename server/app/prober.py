@@ -84,7 +84,6 @@ async def check_device_health(device: dict) -> dict:
     method = device.get("check_method", "ping")
     ip = device.get("ip_address", "").strip()
     port = device.get("check_port")
-    notes = device.get("notes", "")
     device_type = device.get("device_type", "server")
 
     if not ip:
@@ -110,7 +109,7 @@ async def check_device_health(device: dict) -> dict:
     # 2. 若為 NAS 設備或指定 SNMP，嘗試採集 SNMP 硬體數據 (CPU/RAM/Volume/Temp)
     snmp_data = None
     if device_type == "nas" or (device_type != "ups" and method == "snmp"):
-        snmp_data = await probe_synology_snmp(ip, notes)
+        snmp_data = await probe_synology_snmp(ip)
         if snmp_data:
             online = True
             vol_str = ""
@@ -122,7 +121,7 @@ async def check_device_health(device: dict) -> dict:
 
     # 3. 若為 UPS 設備，採集電池電量、備援時間、負載率與溫度
     if device_type == "ups":
-        ups_data = await probe_ups_status(ip, check_method=method, notes=notes)
+        ups_data = await probe_ups_status(ip, check_method=method)
         if ups_data:
             online = True
             snmp_data = ups_data

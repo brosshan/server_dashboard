@@ -1,8 +1,10 @@
+import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from puresnmp import Client, V1, V2C, PyWrapper
+from puresnmp import Auth, Client, Priv, PyWrapper, V3
 
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
@@ -73,8 +75,12 @@ def load_config(path: Optional[Path] = None) -> Dict[str, Any]:
     defaults = {
         "host": "192.168.0.7",
         "port": 161,
-        "version": "v2c",
-        "community": "public",
+        "version": "v3",
+        "username": "",
+        "auth_password": "",
+        "priv_password": "",
+        "auth_protocol": "sha1",
+        "priv_protocol": "aes",
         "timeout": 2,
         "retries": 1,
     }
@@ -84,8 +90,19 @@ def load_config(path: Optional[Path] = None) -> Dict[str, Any]:
                 data = json.load(f)
             if isinstance(data, dict):
                 defaults.update(data)
-        except Exception:
-            pass
+            else:
+                raise ValueError(f"UPS configuration must be a JSON object: {cfg_path}")
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError(f"Unable to read UPS configuration {cfg_path}: {error}") from error
+    for field, env_name in (
+        ("username", "SNMP_V3_USERNAME"),
+        ("auth_password", "SNMP_V3_AUTH_PASSWORD"),
+        ("priv_password", "SNMP_V3_PRIV_PASSWORD"),
+        ("auth_protocol", "SNMP_V3_AUTH_PROTOCOL"),
+        ("priv_protocol", "SNMP_V3_PRIV_PROTOCOL"),
+    ):
+        if os.getenv(env_name):
+            defaults[field] = os.environ[env_name]
     return defaults
 
 
@@ -93,14 +110,30 @@ def _make_client(config: Dict[str, Any]):
     host = str(config.get("host", "127.0.0.1"))
     port = int(config.get("port", 161))
     version = str(config.get("version", "v2c")).lower()
-    community = str(config.get("community", "public"))
-    timeout = int(max(1, float(config.get("timeout", 2))))
-    credentials = V1(community) if version == "v1" else V2C(community)
-    # puresnmp Client takes (ip, credentials, port=..., timeout=...)
-    try:
-        client = Client(host, credentials, port=port, timeout=timeout)
-    except TypeError:
-        client = Client(host, credentials, port=port)
+    if version != "v3":
+        raise ValueError("SNMPv1/v2c is disabled; configure SNMPv3 authPriv")
+
+    username = str(config.get("username", "")).strip()
+    auth_password = str(config.get("auth_password", ""))
+    priv_password = str(config.get("priv_password", ""))
+    auth_protocol = str(config.get("auth_protocol", "sha1")).lower()
+    priv_protocol = str(config.get("priv_protocol", "aes")).lower()
+    if not username or len(auth_password) < 8 or len(priv_password) < 8:
+        raise ValueError("SNMPv3 username and authPriv passphrases of at least 8 characters are required")
+    if auth_protocol != "sha1" or priv_protocol != "aes":
+        raise ValueError("Only SNMPv3 SHA-1 authentication with AES privacy is enabled")
+    timeout = int(config.get("timeout", 2))
+    retries = int(config.get("retries", 1))
+    if not 1 <= timeout <= 30 or not 0 <= retries <= 5:
+        raise ValueError("SNMP timeout must be 1-30 seconds and retries must be 0-5")
+
+    credentials = V3(
+        username,
+        auth=Auth(auth_password.encode("utf-8"), auth_protocol),
+        priv=Priv(priv_password.encode("utf-8"), priv_protocol),
+    )
+    client = Client(host, credentials, port=port)
+    client.configure(timeout=timeout, retries=retries)
     return PyWrapper(client)
 
 
@@ -155,59 +188,47 @@ def _oid_str(oid: Any) -> str:
         return str(oid)
 
 
-def snmp_get(oids: List[str], config: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[str]]:
+async def _snmp_get_async(oids: List[str], config: Dict[str, Any]) -> Dict[str, Any]:
     results: Dict[str, Any] = {}
-    error: Optional[str] = None
     if not oids:
-        return results, error
+        return results
+    client = _make_client(config)
     try:
-        client = _make_client(config)
-        # Try multiget if available, else get one by one
-        if hasattr(client, "multiget"):
-            try:
-                values = client.multiget(oids)
-                for oid, val in zip(oids, values):
-                    results[_oid_str(oid)] = _to_plain(val)
-                return results, error
-            except Exception:
-                pass
+        values = await client.multiget(oids)
+        return {_oid_str(oid): _to_plain(value) for oid, value in zip(oids, values)}
+    except Exception as e:
         for oid in oids:
             try:
-                val = client.get(oid)
-                results[_oid_str(oid)] = _to_plain(val)
+                results[_oid_str(oid)] = _to_plain(await client.get(oid))
             except Exception:
-                # missing OID is common; continue
                 continue
-    except Exception as e:
-        error = str(e)
-    return results, error
+        if not results:
+            raise e
+    return results
+
+
+def snmp_get(oids: List[str], config: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[str]]:
+    try:
+        return asyncio.run(_snmp_get_async(oids, config)), None
+    except Exception as error:
+        return {}, str(error)
+
+
+async def _snmp_walk_async(base_oid: str, config: Dict[str, Any], max_rows: int) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    client = _make_client(config)
+    async for item in client.bulkwalk([base_oid]):
+        rows.append({"oid": _oid_str(item.oid), "value": _to_plain(item.value)})
+        if len(rows) >= max_rows:
+            break
+    return rows
 
 
 def snmp_walk(base_oid: str, config: Dict[str, Any], max_rows: int = 300) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    rows: List[Dict[str, Any]] = []
-    error: Optional[str] = None
     try:
-        client = _make_client(config)
-        walker = None
-        for name in ("bulkwalk", "walk", "multiwalk"):
-            if hasattr(client, name):
-                walker = getattr(client, name)
-                break
-        if walker is None:
-            return rows, "SNMP client does not support walk"
-        for item in walker(base_oid):
-            try:
-                oid, val = item
-            except Exception:
-                # some APIs may return objects with .oid/.value
-                oid = getattr(item, "oid", None)
-                val = getattr(item, "value", None)
-            rows.append({"oid": _oid_str(oid), "value": _to_plain(val)})
-            if len(rows) >= max_rows:
-                break
-    except Exception as e:
-        error = str(e)
-    return rows, error
+        return asyncio.run(_snmp_walk_async(base_oid, config, max_rows)), None
+    except Exception as error:
+        return [], str(error)
 
 
 def _lookup_by_oid(fetched: Dict[str, Any], oid: str) -> Any:
@@ -230,10 +251,10 @@ def _scale_tenths(value: Any) -> Any:
 def fetch_ups_data(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     cfg = config or load_config()
     version = str(cfg.get("version", "v2c")).lower()
-    if version == "v3":
+    if version != "v3":
         return {
             "ok": False,
-            "error": "SNMPv3 尚未在此範例中實作，請改用 v1/v2c 或擴充 snmp_client.py 的認證參數。",
+            "error": "SNMPv1/v2c is disabled; configure SNMPv3 authPriv.",
             "config": {k: v for k, v in cfg.items() if "pass" not in k.lower() and "community" not in k.lower()},
             "data": {},
             "raw": {},
@@ -301,8 +322,9 @@ def fetch_ups_data(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         error_msg = "未取得任何 SNMP 資料，請確認 IP/Community/版本與網路連線。"
 
     safe_cfg = dict(cfg)
-    if "community" in safe_cfg:
-        safe_cfg["community"] = "***" if safe_cfg["community"] else ""
+    for key in list(safe_cfg):
+        if "password" in key.lower() or "community" in key.lower():
+            safe_cfg.pop(key)
 
     return {
         "ok": ok,

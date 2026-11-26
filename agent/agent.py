@@ -1,8 +1,11 @@
+import ipaddress
 import json
+import os
 import platform
 import socket
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import psutil
 import requests
@@ -61,10 +64,6 @@ def collect_metrics(config: dict = None) -> dict:
     }
 
 
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-
 def get_target_url(config: dict) -> str:
     active_file = Path(__file__).resolve().parents[1] / ".active_url"
     if active_file.exists():
@@ -77,16 +76,30 @@ def get_target_url(config: dict) -> str:
     return config.get("server_url") or config.get("api_url") or "http://127.0.0.1:8000/api/metrics"
 
 
+def validate_target_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http" and parsed.hostname:
+        try:
+            if ipaddress.ip_address(parsed.hostname).is_loopback:
+                return
+        except ValueError:
+            if parsed.hostname.lower() == "localhost":
+                return
+    raise ValueError("Agent only sends API keys over HTTPS; HTTP is allowed only for loopback development")
+
+
 def main() -> None:
     config = load_config()
     target_url = get_target_url(config)
-    api_key = config.get("api_key", "")
+    validate_target_url(target_url)
+    api_key = os.getenv("MONITOR_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("Set MONITOR_API_KEY in the process environment; credentials are not read from JSON")
     session = requests.Session()
     cert_file = Path(__file__).with_name("cert.pem")
-    if cert_file.exists():
-        session.verify = str(cert_file)
-    else:
-        session.verify = False
+    session.verify = str(cert_file) if cert_file.exists() else True
     while True:
         try:
             response = session.post(

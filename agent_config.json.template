@@ -1,6 +1,5 @@
 {
   "server_url": "https://<YOUR_SERVER_IP>/api/metrics",
-  "api_key": "YOUR_AGENT_API_KEY_HERE",
   "interval_seconds": 5,
   "custom_hostname": ""
 }

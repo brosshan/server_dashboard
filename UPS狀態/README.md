@@ -28,18 +28,23 @@ python app.py
 
 啟動後開啟瀏覽器：<http://localhost:8000>
 
+服務預設僅監聽 `127.0.0.1`。若需透過反向代理存取，請使用 `UPS_DASHBOARD_HOST`／`UPS_DASHBOARD_PORT` 明確設定，並在代理層加上認證與網路存取限制；勿直接公開此服務。
+
 ## 設定（`config.json`）
 
 ```json
 {
   "source": "web",
-  "ups_url": "https://192.168.0.7/webpages/home.html?ts=1795511273764#",
-  "verify_ssl": false,
+  "ups_url": "https://192.168.0.7/webpages/home.html",
+  "verify_ssl": true,
+  "ca_cert_path": "",
   "web_timeout": 5,
   "host": "192.168.0.7",
   "port": 161,
-  "version": "v2c",
-  "community": "public",
+  "version": "v3",
+  "username": "",
+  "auth_protocol": "sha1",
+  "priv_protocol": "aes",
   "timeout": 2,
   "retries": 1
 }
@@ -47,8 +52,10 @@ python app.py
 
 - `source`：`web`（預設，從 UPS 網頁 XML 抓取）或 `snmp`（從 SNMP UDP 161 抓取）
 - `ups_url`：UPS 管理網頁網址（程式會自動解析主機並抓取其 XML 資料）
-- `verify_ssl`：UPS 自簽憑證時設為 `false`
+- `verify_ssl`：必須為 `true`；如使用私有 CA，設定 `ca_cert_path` 指向 CA 憑證檔
 - `web_timeout`：HTTP/HTTPS 請求逾時秒數
+- SNMP 僅支援 SNMPv3 authPriv。請以 `SNMP_V3_USERNAME`、`SNMP_V3_AUTH_PASSWORD`、`SNMP_V3_PRIV_PASSWORD` 環境變數提供憑證（兩組密語至少 8 字元）；不支援 v1/v2c 或 `public` 社群字串。
+- UPS 網頁資料僅接受 HTTPS，且預設驗證伺服器憑證；不得以停用驗證或改用 HTTP 繞過憑證問題。
 
 ## API
 

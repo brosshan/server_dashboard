@@ -3,21 +3,12 @@ import ipaddress
 import logging
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger("ups_prober")
+from UPS狀態.web_client import fetch_ups_web_data
+from UPS狀態.snmp_client import fetch_ups_data as fetch_ups_snmp_data
 
-try:
-    from UPS狀態.web_client import fetch_ups_web_data
-    from UPS狀態.snmp_client import fetch_ups_data as fetch_ups_snmp_data
-except ImportError:
-    try:
-        import sys
-        sys.path.append("D:/gemini/server_dashboard/UPS狀態")
-        from web_client import fetch_ups_web_data
-        from snmp_client import fetch_ups_data as fetch_ups_snmp_data
-    except Exception as e:
-        logger.error(f"Cannot import UPS client: {e}")
-        fetch_ups_web_data = None
-        fetch_ups_snmp_data = None
+from .config import settings
+
+logger = logging.getLogger("ups_prober")
 
 
 def is_safe_private_ip(ip_str: str) -> bool:
@@ -29,7 +20,7 @@ def is_safe_private_ip(ip_str: str) -> bool:
         return False
 
 
-async def probe_ups_status(ip: str, check_method: str = "web", notes: str = "") -> Optional[Dict[str, Any]]:
+async def probe_ups_status(ip: str, check_method: str = "web") -> Optional[Dict[str, Any]]:
     """
     非同步調用 UPS 遙測 (Web XML 或 SNMP)
     嚴格限制僅探測合法之私有網路 IP，防範 SSRF 與外網偽冒探測
@@ -42,31 +33,24 @@ async def probe_ups_status(ip: str, check_method: str = "web", notes: str = "") 
     cfg = {
         "host": clean_ip,
         "ups_url": f"https://{clean_ip}/webpages/home.html",
-        "verify_ssl": False,  # UPS 內嵌卡多為自簽憑證，若 notes 包含 verify_ssl=true 可啟用嚴格驗證
+        "verify_ssl": True,
+        "ca_cert_path": settings.ups_ssl_ca_path or None,
         "web_timeout": 4.0,
         "timeout": 3,
-        "community": "public",
-        "version": "v2c",
+        "version": "v3",
+        "username": settings.snmp_v3_username,
+        "auth_password": settings.snmp_v3_auth_password.get_secret_value(),
+        "priv_password": settings.snmp_v3_priv_password.get_secret_value(),
+        "auth_protocol": settings.snmp_v3_auth_protocol,
+        "priv_protocol": settings.snmp_v3_priv_protocol,
     }
-    # 若 notes 包含自訂 community, url 或 verify_ssl
-    if notes:
-        for item in notes.split(";"):
-            item = item.strip()
-            if item.startswith("community="):
-                cfg["community"] = item.split("=", 1)[1].strip()
-            elif item.startswith("url="):
-                cfg["ups_url"] = item.split("=", 1)[1].strip()
-            elif item.lower() == "verify_ssl=true":
-                cfg["verify_ssl"] = True
 
     loop = asyncio.get_running_loop()
 
     def _sync_fetch():
-        if check_method == "snmp" and fetch_ups_snmp_data:
+        if check_method == "snmp":
             return fetch_ups_snmp_data(cfg)
-        elif fetch_ups_web_data:
-            return fetch_ups_web_data(cfg)
-        return None
+        return fetch_ups_web_data(cfg)
 
     try:
         res = await loop.run_in_executor(None, _sync_fetch)

@@ -16,8 +16,14 @@ class Database:
         self.db_path = str(path)
         self.redis: Redis | None = None
 
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(
+            self.db_path,
+            timeout=settings.sqlite_timeout_seconds,
+        )
+
     async def connect(self) -> None:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             connection.execute("PRAGMA journal_mode=WAL;")
             connection.execute(
                 """
@@ -78,7 +84,7 @@ class Database:
         data["status"] = "online"
         data["last_seen"] = now.isoformat()
 
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             connection.row_factory = sqlite3.Row
             matched = connection.execute(
                 "SELECT id, name, location, notes FROM devices WHERE ip_address = ? OR name = ? LIMIT 1",
@@ -137,7 +143,7 @@ class Database:
                 if raw:
                     servers[key.removeprefix("server:status:")] = json.loads(raw)
 
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             connection.row_factory = sqlite3.Row
 
             dev_rows = connection.execute(
@@ -196,7 +202,7 @@ class Database:
     async def history(self, hostname: str, hours: int = 24) -> list[dict]:
         cutoff = datetime.now(timezone.utc).timestamp() - hours * 3600
         cutoff_text = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(
                 """
@@ -224,7 +230,7 @@ class Database:
         ]
 
     async def list_devices(self) -> list[dict]:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(
                 """
@@ -257,7 +263,7 @@ class Database:
             ]
 
     async def get_device(self, device_id: int) -> dict | None:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             connection.row_factory = sqlite3.Row
             row = connection.execute(
                 """
@@ -288,7 +294,7 @@ class Database:
             }
 
     async def create_device(self, data: dict) -> dict:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.cursor()
             cursor.execute(
                 """
@@ -324,7 +330,7 @@ class Database:
             return await self.get_device(device_id)
         params.append(device_id)
 
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             connection.execute(
                 f"UPDATE devices SET {', '.join(fields)} WHERE id = ?",
                 params,
@@ -341,7 +347,7 @@ class Database:
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         snmp_str = json.dumps(snmp_data) if snmp_data else ""
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             if snmp_data is not None:
                 connection.execute(
                     """
@@ -362,7 +368,7 @@ class Database:
                 )
 
     async def delete_device(self, device_id: int) -> bool:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute("DELETE FROM devices WHERE id = ?", (device_id,))
             return cursor.rowcount > 0
 

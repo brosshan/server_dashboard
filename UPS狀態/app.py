@@ -1,4 +1,5 @@
 from datetime import datetime
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -28,11 +29,17 @@ def _fetch_by_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         result["source"] = "snmp"
         return result
     result = fetch_ups_web_data(cfg)
-    safe_cfg = dict(cfg)
-    if "community" in safe_cfg:
-        safe_cfg["community"] = "***" if safe_cfg["community"] else ""
-    result["config"] = safe_cfg
+    result["config"] = _public_config(cfg)
     return result
+
+
+def _public_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    secret_markers = ("password", "community", "api_key", "token", "secret")
+    return {
+        key: value
+        for key, value in cfg.items()
+        if not any(marker in key.lower() for marker in secret_markers)
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -42,7 +49,7 @@ async def index(request: Request):
         "index.html",
         {
             "request": request,
-            "config": {k: v for k, v in cfg.items() if k != "community"},
+            "config": _public_config(cfg),
             "host": cfg.get("host", ""),
             "ups_url": cfg.get("ups_url", ""),
             "source": cfg.get("source", "web"),
@@ -82,10 +89,7 @@ async def api_battery():
 @app.get("/api/config")
 async def api_config():
     cfg = load_config()
-    safe = dict(cfg)
-    if "community" in safe:
-        safe["community"] = "***" if safe["community"] else ""
-    return JSONResponse(content=safe)
+    return JSONResponse(content=_public_config(cfg))
 
 
 @app.get("/api/health")
@@ -96,4 +100,6 @@ async def api_health():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    host = os.getenv("UPS_DASHBOARD_HOST", "127.0.0.1")
+    port = int(os.getenv("UPS_DASHBOARD_PORT", "8000"))
+    uvicorn.run("app:app", host=host, port=port, reload=False)

@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import platform
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,8 +10,6 @@ from fastapi.staticfiles import StaticFiles
 from .api import database, router
 from .config import settings
 from .scheduler import run_device_probes
-
-logger = logging.getLogger("uvicorn.error")
 
 # Windows asyncio Proactor 關閉非預期 RST 產生的 WinError 10054 雜訊處理
 if platform.system() == "Windows":
@@ -32,16 +29,22 @@ if platform.system() == "Windows":
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 安全檢查：若未更換預設 Key，發出明確資安警告
-    if settings.api_key in ("change-me", "change-this-secret-key"):
-        logger.warning(
-            "⚠️ [資安警告] 目前 API_KEY 仍為範例預設值 ('%s')！正式環境請務必在 .env 中變更！",
-            settings.api_key,
-        )
+    placeholder_keys = {
+        "change-me",
+        "change-this-secret-key",
+        "change-this-metrics-key",
+        "change-admin-key",
+        "change-this-admin-key",
+    }
+    if (
+        not settings.api_key
+        or not settings.admin_api_key
+        or settings.api_key in placeholder_keys
+        or settings.admin_api_key in placeholder_keys
+    ):
+        raise RuntimeError("API_KEY and ADMIN_API_KEY must be configured with distinct non-placeholder values")
     if settings.admin_api_key == settings.api_key:
-        logger.warning(
-            "⚠️ [資安嚴重警告] ADMIN_API_KEY 與 API_KEY 相同！持有 Agent 金鑰者將具備完整管理者權限！請務必在 .env 中分開設置！"
-        )
+        raise RuntimeError("ADMIN_API_KEY and API_KEY must be different")
 
     await database.connect()
     probe_task = asyncio.create_task(run_device_probes(database))
@@ -73,7 +76,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
         "connect-src 'self' ws: wss: http: https:; "

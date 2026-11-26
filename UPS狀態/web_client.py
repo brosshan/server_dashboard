@@ -60,14 +60,18 @@ def _build_base_url(config: Dict[str, Any]) -> str:
     return f"{scheme}://{host}"
 
 
-def _make_ssl_context(verify_ssl: bool) -> ssl.SSLContext:
-    if verify_ssl:
-        return ssl.create_default_context()
-    ctx = ssl._create_unverified_context()
-    return ctx
+def _make_ssl_context(verify_ssl: bool = True, ca_cert_path: Optional[str] = None) -> ssl.SSLContext:
+    if not verify_ssl:
+        raise ValueError("TLS certificate verification cannot be disabled")
+    return ssl.create_default_context(cafile=ca_cert_path or None)
 
 
-def _fetch_xml(url: str, timeout: float = 5.0, verify_ssl: bool = False) -> Tuple[Optional[ET.Element], Optional[str]]:
+def _fetch_xml(
+    url: str,
+    timeout: float = 5.0,
+    verify_ssl: bool = True,
+    ca_cert_path: Optional[str] = None,
+) -> Tuple[Optional[ET.Element], Optional[str]]:
     ts = int(time.time() * 1000)
     sep = "&" if "?" in url else "?"
     full_url = f"{url}{sep}_t={ts}"
@@ -79,8 +83,10 @@ def _fetch_xml(url: str, timeout: float = 5.0, verify_ssl: bool = False) -> Tupl
             "Cache-Control": "no-cache",
         },
     )
-    ctx = _make_ssl_context(verify_ssl) if full_url.lower().startswith("https://") else None
     try:
+        if not full_url.lower().startswith("https://"):
+            raise ValueError("UPS status requests require HTTPS")
+        ctx = _make_ssl_context(verify_ssl, ca_cert_path)
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             raw = resp.read().decode("utf-8", errors="replace").strip()
         if not raw:
@@ -149,13 +155,24 @@ def _collect_raw_items(root: Optional[ET.Element], source_name: str) -> List[Dic
 def fetch_ups_web_data(config: Dict[str, Any]) -> Dict[str, Any]:
     base_url = _build_base_url(config)
     timeout = float(config.get("web_timeout", config.get("timeout", 5)))
-    verify_ssl = bool(config.get("verify_ssl", False))
+    verify_ssl = bool(config.get("verify_ssl", True))
+    ca_cert_path = config.get("ca_cert_path") or None
 
     index_url = f"{base_url}/webpages/xml/ups/index_ups.xml"
     battery_url = f"{base_url}/webpages/xml/ups/info_battery.xml"
 
-    index_root, index_err = _fetch_xml(index_url, timeout=timeout, verify_ssl=verify_ssl)
-    batt_root, batt_err = _fetch_xml(battery_url, timeout=timeout, verify_ssl=verify_ssl)
+    index_root, index_err = _fetch_xml(
+        index_url,
+        timeout=timeout,
+        verify_ssl=verify_ssl,
+        ca_cert_path=ca_cert_path,
+    )
+    batt_root, batt_err = _fetch_xml(
+        battery_url,
+        timeout=timeout,
+        verify_ssl=verify_ssl,
+        ca_cert_path=ca_cert_path,
+    )
 
     if index_root is None and batt_root is None:
         return {

@@ -36,6 +36,7 @@ security*.md
 agent/agent_config.json
 deploy_agent_pkg/agent_config.json
 deploy_agent_pkg.zip
+*.exe
 
 # 含有特定設備帳密的 UPS 本地設定檔 (請保留 config.example.json)
 UPS狀態/config.json

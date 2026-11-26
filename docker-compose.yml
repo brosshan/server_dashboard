@@ -1,11 +1,16 @@
 services:
   server:
-    build: ./server
+    build:
+      context: .
+      dockerfile: server/Dockerfile
     ports:
-      - "80:80"
-      - "443:443"
+      - "${DASHBOARD_BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_PORT:-8000}:8000"
     env_file:
       - .env
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-change-redis-password}@redis:6379/0
+      - HOST=0.0.0.0
+      - REQUIRE_READ_AUTH=true
     depends_on:
       - redis
     volumes:
@@ -14,6 +19,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-change-redis-password}"]
     restart: unless-stopped
     volumes:
       - redis-data:/data
